@@ -140,6 +140,10 @@ html{-webkit-text-size-adjust:100%}
 .btn[disabled]{opacity:.6;cursor:progress}
 </style>
 <style>
+.dot.stale{background:var(--warn)}
+.kv{display:grid;grid-template-columns:1fr auto;gap:6px 12px;padding:14px;font-variant-numeric:tabular-nums;font-size:14px}
+.kv dt{color:var(--muted)}.kv dd{margin:0;text-align:right}
+.kv .tot{font-weight:600;border-top:1px solid var(--line);padding-top:6px}
 .srcline{font:12px/1.4 var(--f-mono);color:var(--muted);overflow-wrap:anywhere}
 .help{font-size:13px;color:var(--muted)}
 .help ol{margin:6px 0 0;padding-left:20px}
@@ -166,8 +170,13 @@ html{-webkit-text-size-adjust:100%}
   </section>
 
   <section>
-    <h2>Utilization by week</h2>
+    <h2>Hours per bay, weekly <span class="aside note">dashed = break-even</span></h2>
     <div class="card chart" id="chart"><div class="empty">The trend line appears once there are two or more weeks.</div></div>
+  </section>
+
+  <section>
+    <h2>Our 4-bay break-even <span class="pill mid" style="letter-spacing:.04em">Placeholder numbers</span></h2>
+    <div class="card" id="beCard"></div>
   </section>
 
   <section>
@@ -183,6 +192,24 @@ html{-webkit-text-size-adjust:100%}
 // Path to the weekly data file, relative to this page. If index.html sits in the repo root
 // and the file is data/weekly.csv, leave as is. CSV or JSON both work.
 const DATA_PATH = "data/weekly.csv";
+
+// PLACEHOLDER ASSUMPTIONS — replace with real numbers as you get them.
+const OUR = {
+  bays: 4,
+  openHoursPerDay: 19,        // 6am–1am
+  avgRate: 40,                // $/bay-hour actually collected, after member discounts (TARGET lists $35–45)
+  paymentFeePct: 3,           // card / booking-platform fees, % of revenue
+  sqft: 2800,                 // ~4 bays + entry, washroom, small lounge
+  netRentPerSqft: 17,         // $/sq ft/yr; Ottawa industrial avg ≈ $16.71 (CBRE Q2 2026)
+  addlRentPerSqft: 9,         // $/sq ft/yr property tax, maintenance, insurance (TMI), a guess
+  loanAmount: 200000,         // build-out + 4 sims + access control
+  loanRatePct: 8,             // annual
+  loanYears: 7,
+  otherMonthly: 2800,         // utilities 800, software/internet 400, insurance 400, cleaning/repairs 700, marketing 500
+};
+const TARGET_AVG_RATE = 40;      // TARGET lists $35–45/hr; used for their revenue estimate
+const PRIME_HRS_PER_BAY_WEEK = 49; // guess: weekdays 5–10pm (25) + weekends 8am–8pm (24). Match check_bookings.py's definition.
+const STALE_AFTER_DAYS = 3;
 /* ================================== */
 
 (function(){
@@ -256,14 +283,39 @@ function parse(text){
 }
 
 /* ---------- render ---------- */
-const band=u=>u<10?"low":u<25?"mid":"ok";
-const bandLabel=u=>u<10?"Low":u<25?"Building":"Healthy";
+const money=n=>"$"+Math.round(n).toLocaleString("en-CA");
+const BE=(()=>{
+  const wksPerMonth=52/12, r=OUR.loanRatePct/100/12, n=OUR.loanYears*12;
+  const loan=r?OUR.loanAmount*r/(1-Math.pow(1+r,-n)):OUR.loanAmount/n;
+  const rent=OUR.sqft*(OUR.netRentPerSqft+OUR.addlRentPerSqft)/12;
+  const monthly=loan+rent+OUR.otherMonthly;
+  const netRate=OUR.avgRate*(1-OUR.paymentFeePct/100);
+  const hrsMonth=monthly/netRate;
+  const capMonth=OUR.bays*OUR.openHoursPerDay*7*wksPerMonth;
+  return {loan,rent,monthly,netRate,hrsMonth,capMonth,util:hrsMonth/capMonth*100,perBayWeek:hrsMonth/wksPerMonth/OUR.bays};
+})();
+const band=h=>h<BE.perBayWeek/2?"low":h<BE.perBayWeek?"mid":"ok";
+const bandLabel=h=>h<BE.perBayWeek/2?"Well below our break-even":h<BE.perBayWeek?"Below our break-even":"Above our break-even";
+function renderBE(){
+  $("#beCard").innerHTML=`<dl class="kv">
+    <dt>Rent (${OUR.sqft.toLocaleString("en-CA")} sq ft × $${OUR.netRentPerSqft+OUR.addlRentPerSqft}/sq ft/yr)</dt><dd>${money(BE.rent)}/mo</dd>
+    <dt>Loan (${money(OUR.loanAmount)} at ${OUR.loanRatePct}%, ${OUR.loanYears} yrs)</dt><dd>${money(BE.loan)}/mo</dd>
+    <dt>Utilities, software, insurance, cleaning, marketing</dt><dd>${money(OUR.otherMonthly)}/mo</dd>
+    <dt class="tot">Monthly costs (no owner pay)</dt><dd class="tot">${money(BE.monthly)}/mo</dd>
+    <dt>Revenue per bay-hour after ${OUR.paymentFeePct}% fees</dt><dd>$${BE.netRate.toFixed(2)}</dd>
+    <dt class="tot">Hours to break even</dt><dd class="tot">${Math.round(BE.hrsMonth)}/mo · ${fmt1(BE.perBayWeek)} per bay/week</dd>
+    <dt>As utilization (${OUR.bays} bays, ${OUR.openHoursPerDay} hrs/day)</dt><dd><b>${fmt1(BE.util)}%</b></dd>
+  </dl><div class="note" style="padding:0 14px 14px">Every number here is a placeholder. Edit the OUR block at the top of index.html as real quotes come in.</div>`;
+}
 function render(){
   const sl=$("#syncLine");
-  sl.innerHTML='<span class="dot live"></span><span></span>';
-  sl.lastChild.textContent = commitInfo
+  const ageDays=commitInfo?(Date.now()-new Date(commitInfo.date))/86400000:0;
+  const stale=ageDays>STALE_AFTER_DAYS;
+  sl.innerHTML=`<span class="dot ${stale?"stale":"live"}"></span><span></span>`;
+  sl.lastChild.textContent = (stale?`No new data in ${Math.floor(ageDays)} days. Check that the tracker is running. `:"") + (commitInfo
     ? "Data file last updated "+new Date(commitInfo.date).toLocaleString("en-CA",{month:"short",day:"numeric",hour:"numeric",minute:"2-digit"})
-    : "Loaded "+new Date(loadedAt).toLocaleTimeString("en-CA",{hour:"numeric",minute:"2-digit"});
+    : "Loaded "+new Date(loadedAt).toLocaleTimeString("en-CA",{hour:"numeric",minute:"2-digit"}));
+  renderBE();
   $("#srcLine").textContent="Source: "+DATA_PATH;
 
   const venues=[...new Set(weeks.map(w=>w.venue))].sort();
@@ -277,18 +329,21 @@ function render(){
     $("#latest").innerHTML='<div class="card empty">The data file loaded, but no rows had a week date (YYYY-MM-DD), booked hours and capacity. Check the column names.</div>';
     $("#latestWeek").textContent=""; $("#chart").innerHTML=""; $("#weeksTable").innerHTML=""; return;
   }
-  const L=rows[rows.length-1], util=L.booked/L.capacity*100, bays=L.capacity%168===0?L.capacity/168:null;
+  const L=rows[rows.length-1], util=L.booked/L.capacity*100, bays=Math.max(1,Math.round(L.capacity/168));
+  const perBayWk=L.booked/bays, primeUtil=L.prime!=null?L.prime/(PRIME_HRS_PER_BAY_WEEK*bays)*100:null;
   const prev=rows.length>1?rows[rows.length-2]:null, dPts=prev?util-prev.booked/prev.capacity*100:null;
   const primeShare=L.prime!=null&&L.booked?L.prime/L.booked*100:null;
   $("#latestWeek").textContent=`${venue} · week of ${dayLabel(L.week)}${cur===L?" (in progress)":""}`;
   $("#latest").innerHTML=`<div class="readout">
     <div class="hero"><div><div class="rl">Utilization</div><div class="rv">${fmt1(util)}<small>%</small></div></div>
-      <div style="display:flex;flex-direction:column;align-items:flex-end;gap:6px"><span class="pill ${band(util)}">${bandLabel(util)}</span>${dPts!=null?`<span class="note">${dPts>=0?"▲":"▼"} ${fmt1(Math.abs(dPts))} pts vs prior week</span>`:""}</div></div>
+      <div style="display:flex;flex-direction:column;align-items:flex-end;gap:6px"><span class="pill ${band(perBayWk)}">${bandLabel(perBayWk)}</span>${dPts!=null?`<span class="note">${dPts>=0?"▲":"▼"} ${fmt1(Math.abs(dPts))} pts vs prior week</span>`:""}</div></div>
     <div><div class="rl">Booked</div><div class="rv">${fmt1(L.booked)}<small>hrs</small></div></div>
     <div><div class="rl">Prime</div><div class="rv">${L.prime!=null?fmt1(L.prime):"—"}<small>hrs</small></div></div>
     <div><div class="rl">Prime % of booked</div><div class="rv">${primeShare!=null?fmt1(primeShare):"—"}<small>%</small></div></div>
-    <div><div class="rl">Per bay / day</div><div class="rv">${bays?fmt1(L.booked/bays/7):"—"}<small>hrs</small></div></div>
-    <div style="grid-column:1/-1"><div class="rl">Capacity</div><div class="note" style="margin-top:4px">${L.capacity.toLocaleString("en-CA")} hrs/week${bays?` = ${bays} bays × 168 hrs (open 24/7)`:""}</div></div>
+    <div><div class="rl">Prime utilization*</div><div class="rv">${primeUtil!=null?fmt1(primeUtil):"—"}<small>%</small></div></div>
+    <div><div class="rl">Per bay / week</div><div class="rv">${fmt1(perBayWk)}<small>hrs</small></div><div class="note">we need ${fmt1(BE.perBayWeek)}</div></div>
+    <div><div class="rl">Est. revenue*</div><div class="rv">${money(L.booked*TARGET_AVG_RATE)}<small>/wk</small></div><div class="note">≈ ${money(L.booked*TARGET_AVG_RATE*52/12)}/mo</div></div>
+    <div style="grid-column:1/-1"><div class="rl">Capacity</div><div class="note" style="margin-top:4px">${L.capacity.toLocaleString("en-CA")} hrs/week = ${bays} bays × ${fmt1(L.capacity/bays)} hrs. *Prime utilization assumes ${PRIME_HRS_PER_BAY_WEEK} prime hrs per bay per week; revenue assumes $${TARGET_AVG_RATE}/hr. Both are placeholders.</div></div>
   </div>`;
   if(cur&&cur!==L){ const [y,m,d]=cur.week.split("-").map(Number); const days=Math.min(7,Math.max(1,Math.ceil((new Date()-new Date(y,m-1,d))/86400000)));
     $("#latest").insertAdjacentHTML("beforeend",`<div class="note" style="margin-top:8px">This week so far (day ${days} of 7, from ${dayLabel(cur.week)}): ${fmt1(cur.booked)} hrs booked, ${cur.prime!=null?fmt1(cur.prime)+" prime":"prime n/a"}. Shown above is the last full week.</div>`); }
@@ -301,19 +356,21 @@ function renderChart(rows){
   const el=$("#chart");
   if(rows.length<2){ el.innerHTML='<div class="empty">The trend line appears once there are two or more weeks. Data so far: 1 week.</div>'; return; }
   const W=420,H=210,pl=46,pr=12,pt=26,pb=30;
-  const vals=rows.map(w=>w.booked/w.capacity*100);
-  const top=Math.max(10,Math.ceil(Math.max(...vals)/5)*5);
+  const vals=rows.map(w=>w.booked/Math.max(1,Math.round(w.capacity/168)));
+  const top=Math.ceil(Math.max(...vals,BE.perBayWeek*1.15)/5)*5;
   const x=i=>pl+i*(W-pl-pr)/(rows.length-1), y=v=>pt+(H-pt-pb)*(1-v/top);
   const line=vals.map((v,i)=>`${i?"L":"M"}${x(i).toFixed(1)},${y(v).toFixed(1)}`).join("");
   const area=line+`L${x(vals.length-1).toFixed(1)},${y(0)}L${x(0).toFixed(1)},${y(0)}Z`;
   const step=Math.max(1,Math.ceil(rows.length/4)), last=vals.length-1;
-  el.innerHTML=`<svg viewBox="0 0 ${W} ${H}" role="img" aria-label="Weekly utilization for ${esc(venue)}">
-    ${[0,top/2,top].map(t=>`<line x1="${pl}" x2="${W-pr}" y1="${y(t)}" y2="${y(t)}" stroke="var(--line)" stroke-width="1"/><text x="${pl-8}" y="${y(t)+4}" text-anchor="end" font-size="14" font-family="IBM Plex Mono, monospace" fill="var(--muted)">${fmt1(t)}%</text>`).join("")}
+  el.innerHTML=`<svg viewBox="0 0 ${W} ${H}" role="img" aria-label="Booked hours per bay per week for ${esc(venue)}, against our break-even">
+    ${[0,top/2,top].map(t=>`<line x1="${pl}" x2="${W-pr}" y1="${y(t)}" y2="${y(t)}" stroke="var(--line)" stroke-width="1"/><text x="${pl-8}" y="${y(t)+4}" text-anchor="end" font-size="14" font-family="IBM Plex Mono, monospace" fill="var(--muted)">${fmt1(t)}</text>`).join("")}
+    <line x1="${pl}" x2="${W-pr}" y1="${y(BE.perBayWeek)}" y2="${y(BE.perBayWeek)}" stroke="var(--flag)" stroke-width="2" stroke-dasharray="6 5"/>
+    <text x="${pl+6}" y="${y(BE.perBayWeek)-7}" font-size="13" font-family="IBM Plex Mono, monospace" fill="var(--flag)">our break-even ${fmt1(BE.perBayWeek)}</text>
     <path d="${area}" fill="var(--accent)" fill-opacity=".12"/>
     <path d="${line}" fill="none" stroke="var(--accent)" stroke-width="2.5" stroke-linejoin="round" stroke-linecap="round"/>
     ${rows.map((w,i)=>(i%step===0||i===last)&&!(i!==last&&last-i<step)?`<text x="${x(i)}" y="${H-8}" text-anchor="${i===0?"start":i===last?"end":"middle"}" font-size="14" font-family="IBM Plex Mono, monospace" fill="var(--muted)">${esc(dayLabel(w.week))}</text>`:"").join("")}
     <circle cx="${x(last)}" cy="${y(vals[last])}" r="5" fill="var(--accent)" stroke="var(--surface)" stroke-width="2"/>
-    <text x="${x(last)-8}" y="${y(vals[last])-10}" text-anchor="end" font-size="15" font-weight="600" font-family="IBM Plex Mono, monospace" fill="var(--fg)">${fmt1(vals[last])}%</text>
+    <text x="${x(last)-8}" y="${y(vals[last])-10}" text-anchor="end" font-size="15" font-weight="600" font-family="IBM Plex Mono, monospace" fill="var(--fg)">${fmt1(vals[last])} hrs</text>
   </svg>`;
 }
 $("#venues").addEventListener("click",e=>{ const b=e.target.closest("[data-v]"); if(!b) return; venue=b.dataset.v; store.set("simtracker-venue",venue); render(); });
