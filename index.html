@@ -220,7 +220,7 @@ async function load(){
 /* ---------- parsing: CSV or JSON, forgiving about column names ---------- */
 const KEYS = {
   venue:["venue","name","competitor","location","site"],
-  week:["week","week_start","weekstart","week_of","date","start"],
+  week:["week","week_start","week_starting","week_starting_monday","week_beginning","weekstart","week_of","date","start"],
   booked:["booked","booked_hours","bookedhours","booked_hrs","hours_booked"],
   prime:["prime","prime_hours","primehours","prime_hrs","prime_booked"],
   capacity:["capacity","capacity_hours","total_capacity","total_capacity_hours","totalcapacityhours","capacity_hrs"],
@@ -229,6 +229,7 @@ const norm = k => String(k).toLowerCase().trim().replace(/[\s\-]+/g,"_").replace
 function pickField(obj, field){
   const map={}; Object.keys(obj).forEach(k=>map[norm(k)]=obj[k]);
   for(const k of KEYS[field]){ if(map[k]!==undefined && map[k]!=="") return map[k]; if(map[k.replace(/_/g,"")]!==undefined && map[k.replace(/_/g,"")]!=="") return map[k.replace(/_/g,"")]; }
+  if(field==="week"){ const k=Object.keys(map).find(k=>/week|date/.test(k)); if(k && map[k]!=="") return map[k]; }
   return undefined;
 }
 function splitCsv(line){ const out=[]; let cur="",q=false; for(let i=0;i<line.length;i++){const c=line[i]; if(q){ if(c=='"'&&line[i+1]=='"'){cur+='"';i++;} else if(c=='"') q=false; else cur+=c; } else if(c=='"') q=true; else if(c==","){out.push(cur);cur="";} else cur+=c;} out.push(cur); return out.map(s=>s.trim()); }
@@ -268,7 +269,10 @@ function render(){
   const venues=[...new Set(weeks.map(w=>w.venue))].sort();
   if(!venue||!venues.includes(venue)) venue=venues[0]||null;
   $("#venues").innerHTML=venues.length>1?venues.map(v=>`<button class="chip" aria-pressed="${v===venue}" data-v="${esc(v)}">${esc(v)}</button>`).join(""):"";
-  const rows=weeks.filter(w=>w.venue===venue).sort((a,b)=>a.week.localeCompare(b.week));
+  const all=weeks.filter(w=>w.venue===venue).sort((a,b)=>a.week.localeCompare(b.week));
+  const isPartial=w=>{ const [y,m,d]=w.week.split("-").map(Number); return new Date(y,m-1,d+7)>new Date(); };
+  const cur=all.length&&isPartial(all[all.length-1])?all[all.length-1]:null;
+  const rows=cur&&all.length>1?all.slice(0,-1):all;
   if(!rows.length){
     $("#latest").innerHTML='<div class="card empty">The data file loaded, but no rows had a week date (YYYY-MM-DD), booked hours and capacity. Check the column names.</div>';
     $("#latestWeek").textContent=""; $("#chart").innerHTML=""; $("#weeksTable").innerHTML=""; return;
@@ -276,7 +280,7 @@ function render(){
   const L=rows[rows.length-1], util=L.booked/L.capacity*100, bays=L.capacity%168===0?L.capacity/168:null;
   const prev=rows.length>1?rows[rows.length-2]:null, dPts=prev?util-prev.booked/prev.capacity*100:null;
   const primeShare=L.prime!=null&&L.booked?L.prime/L.booked*100:null;
-  $("#latestWeek").textContent=`${venue} · week of ${dayLabel(L.week)}`;
+  $("#latestWeek").textContent=`${venue} · week of ${dayLabel(L.week)}${cur===L?" (in progress)":""}`;
   $("#latest").innerHTML=`<div class="readout">
     <div class="hero"><div><div class="rl">Utilization</div><div class="rv">${fmt1(util)}<small>%</small></div></div>
       <div style="display:flex;flex-direction:column;align-items:flex-end;gap:6px"><span class="pill ${band(util)}">${bandLabel(util)}</span>${dPts!=null?`<span class="note">${dPts>=0?"▲":"▼"} ${fmt1(Math.abs(dPts))} pts vs prior week</span>`:""}</div></div>
@@ -286,9 +290,11 @@ function render(){
     <div><div class="rl">Per bay / day</div><div class="rv">${bays?fmt1(L.booked/bays/7):"—"}<small>hrs</small></div></div>
     <div style="grid-column:1/-1"><div class="rl">Capacity</div><div class="note" style="margin-top:4px">${L.capacity.toLocaleString("en-CA")} hrs/week${bays?` = ${bays} bays × 168 hrs (open 24/7)`:""}</div></div>
   </div>`;
+  if(cur&&cur!==L){ const [y,m,d]=cur.week.split("-").map(Number); const days=Math.min(7,Math.max(1,Math.ceil((new Date()-new Date(y,m-1,d))/86400000)));
+    $("#latest").insertAdjacentHTML("beforeend",`<div class="note" style="margin-top:8px">This week so far (day ${days} of 7, from ${dayLabel(cur.week)}): ${fmt1(cur.booked)} hrs booked, ${cur.prime!=null?fmt1(cur.prime)+" prime":"prime n/a"}. Shown above is the last full week.</div>`); }
   renderChart(rows);
   $("#weeksTable").innerHTML=`<table><thead><tr><th>Week of</th><th>Booked</th><th>Prime</th><th>Capacity</th><th>Util.</th></tr></thead><tbody>${
-    rows.slice().reverse().map(w=>`<tr><td>${esc(dayLabel(w.week))} <span class="note">${w.week.slice(0,4)}</span></td><td>${fmt1(w.booked)}</td><td>${w.prime!=null?fmt1(w.prime):"—"}</td><td>${w.capacity.toLocaleString("en-CA")}</td><td><b>${fmt1(w.booked/w.capacity*100)}%</b></td></tr>`).join("")
+    all.slice().reverse().map(w=>`<tr><td>${esc(dayLabel(w.week))} <span class="note">${w===cur?"so far":w.week.slice(0,4)}</span></td><td>${fmt1(w.booked)}</td><td>${w.prime!=null?fmt1(w.prime):"—"}</td><td>${w.capacity.toLocaleString("en-CA")}</td><td><b>${fmt1(w.booked/w.capacity*100)}%</b></td></tr>`).join("")
   }</tbody></table>`;
 }
 function renderChart(rows){
